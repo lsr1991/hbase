@@ -36,4 +36,4 @@
    - IOException：客户端与服务器通信异常
    - InterruptedException：执行过程中的干扰异常
  - 管理功能API：包括表、列族相关操作，以及HBaseAdmin类提供的API。这类API的实例不应该长期保留。
- - B+树：
+ - B+树与LVM树的区别[1.p301]：它们利用硬盘的方式不同。B+
