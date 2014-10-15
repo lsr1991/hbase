@@ -44,9 +44,82 @@
  - **B+树与LSM树**[1.p301]
    - 区别：它们利用硬盘的方式不同。对于数据的插入或者更新这类操作，B+树需要对数据进行查找后执行相应操作，其插入或更新的速度受限于硬盘的寻道速率，LSM树则通过排序和合并文件来执行操作，其插入或更新的速度受限于硬盘的连续传输能力（什么是连续传输能力？）。
    - 优缺点：B+树的优点是它保证了查询的速度，缺点是无法适应写入数据规模较大，速率较高的情况。LSM树的优点是能处理大量的数据，能保证稳定的数据插入速率，在查询连续键的记录时只会引发一次磁盘寻道（大大减少了磁盘寻道的时间），缺点是？
- - **客户端查找region的过程**
-  - 
+ - **临时目录文件**
+  - .tmp：用于合并重写文件
+  - recovered.edits：用于WAL回放时写入文件
+  - splits：用于region拆分时创建子region文件结构
+ - **region拆分的过程**[1.p310~311]
+  1. 父region目录创建splits目录
+  2. 关闭父region，不接受请求
+  3. splits目录中创建子region的目录
+  4. 将子region目录移到表目录下
+  5. .META.表中父region状态更新，记录父region和子region的信息
+  6. 在子region目录下创建父region存储数据的引用文件（文件名中散列值与父region相同）
+  7. regionserver打开两个子region，更新.META.表中子region的信息，使其上线
+  7. 将父region存储文件异步重写到子region中.tmp目录下，边合并边重写
+  8. 生成的重写后的文件自动取代引用文件
+  9. 父region在.META.表中被删除，它所有的文件在硬盘中被删除
+  10. master被告知拆分的情况。
+ - **storefile合并（compaction）**[1.p]
+  - 合并的种类：
+    - minor合并：将最后生成的几个文件重写到一个更大的文件中
+    - major合并：将所有文件压缩成一个文件
+  - 触发合并的事件：压缩检查并符合一定条件
+  - 触发压缩检查的事件：
+    - memstore刷写磁盘后
+    - shell命令或API调用compaction
+    - hbase异步线程，以固定周期执行检查
+  - 何时发生major合并：
+    - shell命令或API调用major_compaction
+    - 压缩检查后发现从上次运行major合并到现在的时间超过时限（时限由hbase.hregion.majorcompaction控制）
+    - 压缩检查后触发minor合并，并且合并包含了所有存储文件，minor合并可能被提升为major合并
+  - 何时发生minor合并：
+    - 压缩检查后发现符合大小的文件数量超过阈值并且不发生major合并（文件大小和数量阈值由hbase.hstore.compaction.min.size和hbase.hstore.compaction.min控制）
+ - **HFile**
+  - HFile以文件的形式存储在HDFS上，即某一个regionserver上的某一个region的文件不一定存储在本地，而是被分割成HDFS的块分布在HDFS所在的集群上
+  - HFile包含多个块，块大小为64KB（可设置），块可分为meta块、trailer块、data块、fileinfo块等种类，其中data块的组成如下
+ 
+| Magic | k,v | k,v | ... | k,v |
+| ----- | --- | --- | --- | --- |
+
+  - 上表中(k,v)的数据格式如下（说明：斜体字段的值为不定长） 
+
+| keylength | valuelength | rowlength | _row_ | colFlength | _colF_ | _col_ | ts  | keytype | _value_ |
+| --------- | ----------- | --------- | ----- | ---------- | ------ | ----- | --- | ------- | ------- | 
+
+ - **修改数据的过程**
+  - 每个put、delete、increment操作都被封装成一个keyvalue对象，使用rpc的方式送往对应regionserver，由相应的region对象接收，并写入日志，然后放入memstore中
+ - **WAL**
+  - 概念：预写日志（write-ahead log），由于hbase更新数据时将数据放入内存，等其增长到一定大小才永久性写入磁盘，因此会有数据丢失的风险。预写日志就是为了在内存中数据丢失时能够将数据恢复。日志文件存放在磁盘中。
+  - 日志文件的格式：见下表
+
+| 1 | 2 | 3 | ... | N |
+| --- | --- | --- | --- | --- |
+| k:HLogKey | k:HLogKey | k:HLogKey | ... | k:HLogKey |
+| v:WALEdit | v:WALEdit | v:WALEdit | ... | v:WALEdit |
+
+| HLogKey | WALEdit |
+| ------- | ------- |
+| region名和表名         | 修改操作的keyvalue对象 |
+| 序列号                 |
+| 修改被写入日志的时间戳 |
+| 集群ID                 |
+
+ - **日志滚动**
+  - 概念：旧日志文件关闭，开始使用新日志文件
+  - 触发条件：
+    - 达到块大小的一定比例：块大小由hbase.regionserver.hlog.blocksize控制，一定比例由hbase.regionserver.logroll.multipler控制
+    - 达到一定周期：周期由hbase.regionserver.logroll.period控制
+  - 旧日志被删除的触发条件：达到一定周期，检查存储文件中最大的序列号A，若日志文件最大序列号比A小，该日志文件会被移到.oldlogs目录下 
+ - **客户端缓存的服务器信息**
+  - -ROOT-表的位置
+  - -ROOT-表内容
+  - -META-表内容
+
 
 ## 第三部分 参考文献
 [1]HBase权威指南，Lars George，人民邮电出版社，2013.10
+
 [2]http://en.wikipedia.org/wiki/Remote_procedure_call
+
+
