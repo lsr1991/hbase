@@ -6,7 +6,9 @@
 ## 第一部分 总结
 #### 要点
  1. 客户端如何访问HBase
- 2. 数据如何从客户端发送到HBase
+  - 什么是HBase客户端？HBase客户端即一个HTable对象
+  - 客户端如何获取HBase集群地址？在运行客户端所在的java程序的操作系统上，环境变量中应包含
+ 2. 一次put操作的执行流程
  3. HBase如何将收到的数据写入磁盘
  4. HBase如何管理存储的数据
 
@@ -78,21 +80,19 @@
   - **HFile**
    - HFile以文件的形式存储在HDFS上，即某一个regionserver上的某一个region的文件不一定存储在本地，而是被分割成HDFS的块分布在HDFS所在的集群上
    - HFile包含多个块，块大小为64KB（可设置），块可分为meta块、trailer块、data块、fileinfo块等种类，其中data块的组成如下
- 
+
    | Magic | k,v | k,v | ... | k,v |
    | ----- | --- | --- | --- | --- |
-
    - 上表中(k,v)的数据格式如下（说明：斜体字段的值为不定长） 
-
+ 
    | keylength | valuelength | rowlength | _row_ | colFlength | _colF_ | _col_ | ts  | keytype | _value_ |
    | --------- | ----------- | --------- | ----- | ---------- | ------ | ----- | --- | ------- | ------- | 
-
   - **修改数据的过程**
    - 每个put、delete、increment操作都被封装成一个keyvalue对象，使用rpc的方式送往对应regionserver，由相应的region对象接收，并写入日志，然后放入memstore中
   - **WAL**
    - 概念：预写日志（write-ahead log），由于hbase更新数据时将数据放入内存，等其增长到一定大小才永久性写入磁盘，因此会有数据丢失的风险。预写日志就是为了在内存中数据丢失时能够将数据恢复。日志文件存放在磁盘中。
    - 日志文件的格式：见下表
-
+ 
      | 1 | 2 | 3 | ... | N |
      | --- | --- | --- | --- | --- |
      | k:HLogKey | k:HLogKey | k:HLogKey | ... | k:HLogKey |
