@@ -37,9 +37,9 @@
    - 将多次修改操作批量提交到服务器，具体为：开启客户端缓冲区，即调用函数setAutoFlush(false)，这样每一次客户端执行put操作都会将修改的数据存储到客户端进程的内存中，当需要在特定时刻将多个操作数据一起发送至服务器时，调用函数flushCommits()即可，这时只会进行一次RPC操作。但调用flushCommits()通常是不必要的，因为当缓冲区大小达到设定的值（默认是2MB）时，客户端会隐式调用刷写命令。
   - **隐式刷写和显式刷写**[1.p80]
    - 显式刷写即用户代码调用flushCommits()；隐式刷写即客户端不通过用户代码，自己调用flushCommits()，这在以下三种情况下会触发：
-   1. 用户调用put()并且缓冲区超出限制；
-   2. 用户调用setWriteBufferSize()并且缓冲区超出限制；
-   3. 用户调用HTable类的close()方法。
+     - 用户调用put()并且缓冲区超出限制；
+     - 用户调用setWriteBufferSize()并且缓冲区超出限制；
+     - 用户调用HTable类的close()方法。
   - **HTable、HTablePool类及其实例**[1.p68;1.p191]
    - HTable类及其实例：HBase主要客户端接口是由HTable类提供的，它位于org.apache.hadoop.hbase.client包中。创建HTable实例需要扫描.META.表并执行一些操作，非常耗时（数秒）。因此对于同一线程的多次请求，应复用同一个HTable实例。
    - HTablePool类及其实例：为什么使用HTablePool类？因为HTable类不是线程安全（_什么是线程安全？_）的，所以在多线程环境中复用HTable实例会出现问题，于是得为每一个线程创建一个HTable实例。
