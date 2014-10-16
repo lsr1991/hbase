@@ -5,12 +5,19 @@
 
 ## 第一部分 总结
 #### 要点
- 1. 客户端如何访问HBase
-  - 什么是HBase客户端？HBase客户端即一个HTable对象
-  - 客户端如何获取HBase集群地址？在运行客户端所在的java程序的操作系统上，环境变量中应包含
- 2. 一次put操作的执行流程
- 3. HBase如何将收到的数据写入磁盘
- 4. HBase如何管理存储的数据
+  - **客户端如何访问HBase**
+   - 什么是HBase客户端？HBase客户端即一个HTable对象。
+   - 客户端对hbase的访问都是通过zookeeper集群做中介的。客户端程序通过hbase-site.xml文件中的配置得知zookeeper的连接地址，然后通过zookeeper知道集群中各个regionserver的连接地址。客户端程序运行时会先检查java程序的classpath，如果包含hbase-site.xml的路径，则读取hbase-site.xml获取zookeeper的连接地址，否则从操作系统的CLASSPATH中读取hbase-site.xml，从而获取zookeeper的连接地址。
+  - **一次put操作的执行流程**
+   - 确定执行put操作服务器的位置：由于put操作是一次RPC，它需要被传送到执行该操作的服务器（reigonserver）上，因此需要确定服务器的连接地址，准确地说是需要确定put操作中要修改的数据所在region的位置。客户端通过zookeeper可以获知所有region的位置（即所在服务器的连接地址）并将信息缓存下来，当缓存为空时，客户端获取region位置的具体过程为：客户端访问zookeeper，获取拥有-ROOT-表的服务器的地址，将信息缓存下来，然后访问该服务器获取-ROOT-表，-ROOT-表中记录着拥有.META.表的服务器的地址，客户端又将这些信息缓存下来，然后继续访问拥有.META.表的服务器，获取.META.表，.META.表中记录着所有region的信息，包括起始行键、所属regionserver的地址等关键信息，客户端又将这些信息缓存下来。从缓存的这些信息中，客户端就可以知道put操作应该交给哪一个region，发往哪一个regionserver服务器。直到某一个信息失效（访问时找不到对应内容），客户端才会重新访问对应服务器获取新的信息。从上述看来，客户端缓存的信息有三个：-ROOT-表的位置，.META.表的位置，region的位置。最差的情况是在执行put操作时缓存的三个信息全部失效，那么客户端必须先执行3次访问才能确定所有信息失效，再执行3次访问才能将所有信息更新，总共需要6次网络往返请求。
+   - put操作的发送：put操作被客户端封装在一个keyvalue对象中，由RPC送往目标regionserver，由regionserver上的对应region对象接收，接着region对象将该keyvalue对象写入日志文件HLog中（作为HLog一个K,V类型的数据单元中的value），然后region对象再将keyvalue对象送入memstore内存中，接着RPC完成，客户端程序继续运行。
+  - **HBase如何将收到的数据写入磁盘**
+   - 刷写：如同之前的put操作，其他修改操作（delete，increment）都被封装成一个keyvalue对象存储在memstore内存中。每一个region会为对应表的所有列族各创建一个store对象，每一个store对象会被分配一个memstore，所有的memstore有一个大小上限，由hbase.hregion.memstore.flush.size控制。当memstore大小超过上限时，memstore中的数据将被刷写到磁盘（_memstore在刷写时还能被写入吗？_），同时生成一个存储这些数据的文件，这个文件以HFile的格式存储在HDFS上。
+   - 存储：HFile文件被分割成多个HDFS文件块分布在HDFS集群上。
+  - **HBase如何管理存储的数据**
+   - 合并：由于memstore大小上限一般较小，在数据不断刷写到磁盘后会产生许多文件。为了使文件数量不至于太多（_还有其他原因？_），region会使用合并机制将小文件合并成大文件。合并的方式有两种，一种是minor compaction，一种是major compaction。前者只会合并一定数量的小文件，后者则会将所有文件合并，两者触发的条件不一样，执行频率较高的是前者。
+   - 拆分：当合并后的文件超过阈值时，会触发region的拆分，父region会分成两个大小为原来一半的子region。阈值由hbase.hregion.max.filesize控制的。
+
 
 ## 第二部分 阅读摘要
   - **RPC**
@@ -46,7 +53,7 @@
   - **B+树与LSM树**[1.p301]
    - 区别：它们利用硬盘的方式不同。对于数据的插入或者更新这类操作，B+树需要对数据进行查找后执行相应操作，其插入或更新的速度受限于硬盘的寻道速率，LSM树则通过排序和合并文件来执行操作，其插入或更新的速度受限于硬盘的连续传输能力（什么是连续传输能力？）。
    - 优缺点：B+树的优点是它保证了查询的速度，缺点是无法适应写入数据规模较大，速率较高的情况。LSM树的优点是能处理大量的数据，能保证稳定的数据插入速率，在查询连续键的记录时只会引发一次磁盘寻道（大大减少了磁盘寻道的时间），缺点是？
-  - **临时目录文件**
+  - **临时目录文件**[1.309]
    - .tmp：用于合并重写文件
    - recovered.edits：用于WAL回放时写入文件
    - splits：用于region拆分时创建子region文件结构
@@ -62,7 +69,7 @@
    - 生成的重写后的文件自动取代引用文件
    - 父region在.META.表中被删除，它所有的文件在硬盘中被删除
    - master被告知拆分的情况。
-  - **storefile合并（compaction）**[1.p]
+  - **storefile合并（compaction）**[1.p311]
    - 合并的种类：
     - minor合并：将最后生成的几个文件重写到一个更大的文件中
     - major合并：将所有文件压缩成一个文件
@@ -77,7 +84,7 @@
     - 压缩检查后触发minor合并，并且合并包含了所有存储文件，minor合并可能被提升为major合并
    - 何时发生minor合并：
     - 压缩检查后发现符合大小的文件数量超过阈值并且不发生major合并（文件大小和数量阈值由hbase.hstore.compaction.min.size和hbase.hstore.compaction.min控制）
-  - **HFile**
+  - **HFile**[1.p313]
    - HFile以文件的形式存储在HDFS上，即某一个regionserver上的某一个region的文件不一定存储在本地，而是被分割成HDFS的块分布在HDFS所在的集群上
    - HFile包含多个块，块大小为64KB（可设置），块可分为meta块、trailer块、data块、fileinfo块等种类，其中data块的组成如下
 
@@ -87,9 +94,9 @@
  
    | keylength | valuelength | rowlength | _row_ | colFlength | _colF_ | _col_ | ts  | keytype | _value_ |
    | --------- | ----------- | --------- | ----- | ---------- | ------ | ----- | --- | ------- | ------- | 
-  - **修改数据的过程**
+  - **修改数据的过程**[1.p317]
    - 每个put、delete、increment操作都被封装成一个keyvalue对象，使用rpc的方式送往对应regionserver，由相应的region对象接收，并写入日志，然后放入memstore中
-  - **WAL**
+  - **WAL**[1.p317~319]
    - 概念：预写日志（write-ahead log），由于hbase更新数据时将数据放入内存，等其增长到一定大小才永久性写入磁盘，因此会有数据丢失的风险。预写日志就是为了在内存中数据丢失时能够将数据恢复。日志文件存放在磁盘中。
    - 日志文件的格式：见下表
  
@@ -104,16 +111,16 @@
      | 序列号                 |
      | 修改被写入日志的时间戳 |
      | 集群ID                 |
-  - **日志滚动**
+  - **日志滚动**[1.p320]
    - 概念：旧日志文件关闭，开始使用新日志文件
    - 触发条件：
     - 达到块大小的一定比例：块大小由hbase.regionserver.hlog.blocksize控制，一定比例由hbase.regionserver.logroll.multipler控制
     - 达到一定周期：周期由hbase.regionserver.logroll.period控制
    - 旧日志被删除的触发条件：达到一定周期，检查存储文件中最大的序列号A，若日志文件最大序列号比A小，该日志文件会被移到.oldlogs目录下 
-  - **客户端缓存的服务器信息**
+  - **客户端缓存的服务器信息**[1.p328]
    - -ROOT-表的位置
    - -ROOT-表内容
-   - -META-表内容
+   - .META.表内容
 
 
 ## 第三部分 参考文献
